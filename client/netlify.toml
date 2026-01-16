@@ -1,0 +1,19 @@
+# Netlify deployment configuration
+[build]
+  base = "client"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[context.production.environment]
+  VITE_SIGNALING_SERVER = "https://your-server-url.onrender.com"
+
+[context.deploy-preview.environment]
+  VITE_SIGNALING_SERVER = "https://your-staging-server.onrender.com"
