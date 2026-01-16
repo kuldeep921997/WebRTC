@@ -13,9 +13,8 @@
     "client": "cd client && npm run dev",
     "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
     "test:signaling": "cd server && npm test",
-    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
-    "build:client": "cd client && npm run build",
-    "postinstall": "cd server && npm install && cd ../client && npm install"
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "build:client": "cd client && npm run build"
   },
   "keywords": [
     "webrtc",
