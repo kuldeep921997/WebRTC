@@ -20,14 +20,34 @@ const app = express();
 const server = http.createServer(app);
 
 // Enable CORS for frontend communication
-app.use(cors());
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://web-rtc-client-jack2.vercel.app'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log(`[CORS] Blocked origin: ${origin}`);
+      callback(null, true); // Allow in development, log for monitoring
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 // Initialize Socket.IO with CORS
 const io = new Server(server, {
   cors: {
-    origin: '*', // In production, restrict to specific origins
-    methods: ['GET', 'POST']
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 

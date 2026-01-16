@@ -189,6 +189,16 @@ function App() {
    * Request media access (audio and/or video)
    */
   const startCall = async (mode = 'video') => {
+    // Stop any existing stream before starting a new one
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        addLog(`⏹️ Stopped previous ${track.kind} track`, 'info');
+      });
+      localStreamRef.current = null;
+      setLocalStream(null);
+    }
+
     try {
       const constraints = {
         audio: {
@@ -509,6 +519,16 @@ function App() {
    * Cleanup connection
    */
   const cleanup = () => {
+    // Stop local media tracks to release camera/microphone
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        addLog(`⏹️ Stopped ${track.kind} track during cleanup`, 'info');
+      });
+      localStreamRef.current = null;
+      setLocalStream(null);
+    }
+
     if (dataChannelRef.current) {
       dataChannelRef.current.close();
       dataChannelRef.current = null;
@@ -524,6 +544,9 @@ function App() {
     setRemoteStream(null);
     setConnectionState('disconnected');
     setRemotePeerId(null);
+    setIsCallActive(false);
+    setIsAudioEnabled(true);
+    setIsVideoEnabled(true);
     addLog('🧹 Connection cleaned up', 'info');
   };
 
