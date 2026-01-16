@@ -13,14 +13,33 @@ jobs:
   deploy-render:
     name: Deploy to Render
     runs-on: ubuntu-latest
+    # Only run if secrets are configured
+    if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
       
+      - name: Check for required secrets
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "❌ Error: RENDER_DEPLOY_HOOK secret is not configured"
+            echo "👉 Follow NEXT_STEPS.md to set up deployment"
+            echo "👉 Or disable this workflow by setting if: false"
+            exit 1
+          fi
+          echo "✅ Secrets configured"
+      
       - name: Deploy to Render
         run: |
-          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
+          echo "📤 Triggering Render deployment..."
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          if [ $? -eq 0 ]; then
+            echo "✅ Deployment hook triggered successfully"
+          else
+            echo "❌ Deployment hook failed"
+            exit 1
+          fi
       
       - name: Wait for deployment
         run: |
@@ -107,26 +126,39 @@ jobs:
     name: Health Check
     runs-on: ubuntu-latest
     needs: [deploy-render]
+    # Only run if deploy-render succeeded
+    if: ${{ success() && secrets.SERVER_URL != '' }}
     
     steps:
+      - name: Check for required secrets
+        run: |
+          if [ -z "${{ secrets.SERVER_URL }}" ]; then
+            echo "⚠️ Warning: SERVER_URL secret is not configured"
+            echo "Skipping health check"
+            exit 0
+          fi
+      
       - name: Wait for deployment
-        run: sleep 30
+        run: |
+          echo "⏳ Waiting for Render to complete deployment (30 seconds)..."
+          sleep 30
       
       - name: Check server health
         run: |
           HEALTH_URL="${{ secrets.SERVER_URL }}/health"
-          echo "Checking: $HEALTH_URL"
+          echo "🔍 Checking: $HEALTH_URL"
           
           for i in {1..5}; do
-            if curl -f $HEALTH_URL; then
+            if curl -f "$HEALTH_URL"; then
               echo "✅ Server is healthy!"
               exit 0
             fi
-            echo "Attempt $i failed, retrying..."
+            echo "⏳ Attempt $i failed, retrying in 10 seconds..."
             sleep 10
           done
           
-          echo "❌ Health check failed"
+          echo "❌ Health check failed after 5 attempts"
+          echo "Check Render logs: https://dashboard.render.com"
           exit 1
       
       - name: Notify deployment status

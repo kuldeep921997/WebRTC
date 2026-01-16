@@ -104,6 +104,8 @@ jobs:
   code-quality:
     name: Code Quality
     runs-on: ubuntu-latest
+    # Run after tests pass
+    needs: [test-server, test-client]
     
     steps:
       - name: Checkout code
@@ -138,6 +140,8 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    # Run in parallel with code-quality
+    needs: [test-server, test-client]
     
     steps:
       - name: Checkout code
