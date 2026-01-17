@@ -36,9 +36,32 @@ const SIGNALING_SERVER = import.meta.env.VITE_SIGNALING_SERVER || 'http://localh
 
 const ICE_SERVERS = {
   iceServers: [
+    // Google STUN servers
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    
+    // Free TURN servers (relay fallback for NAT traversal)
+    // OpenRelay - Free TURN server
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ],
+  iceCandidatePoolSize: 10
 };
 
 function App() {
@@ -323,19 +346,28 @@ function App() {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        addLog(`🧊 ICE candidate: ${event.candidate.type} (${event.candidate.protocol})`, 'info');
         socketRef.current?.emit('ice-candidate', {
           candidate: event.candidate,
           targetId: remotePeer
         });
+      } else {
+        addLog('🧊 ICE gathering complete', 'info');
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      addLog(`📊 ICE connection state: ${state}`, state === 'connected' ? 'success' : 'info');
+      addLog(`📊 ICE connection state: ${state}`, state === 'connected' || state === 'completed' ? 'success' : 'info');
       
-      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-        addLog('⚠️ Connection lost or failed', 'error');
+      if (state === 'connected' || state === 'completed') {
+        addLog('✅ ICE connection established!', 'success');
+      } else if (state === 'failed') {
+        addLog('❌ ICE connection failed - NAT traversal issue. Try refreshing.', 'error');
+      } else if (state === 'disconnected') {
+        addLog('⚠️ ICE connection disconnected - attempting reconnection...', 'error');
+      } else if (state === 'closed') {
+        addLog('⚠️ ICE connection closed', 'error');
       }
     };
 
@@ -346,7 +378,13 @@ function App() {
       
       if (state === 'connected') {
         addLog('🎉 Peer connection established!', 'success');
+      } else if (state === 'failed') {
+        addLog('❌ Connection failed. Please refresh and try again.', 'error');
       }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      addLog(`🧊 ICE gathering state: ${pc.iceGatheringState}`, 'info');
     };
 
     /**
@@ -673,6 +711,29 @@ function App() {
   };
 
   /**
+   * Restart ICE connection (useful when connection fails)
+   */
+  const restartConnection = async () => {
+    if (!peerConnectionRef.current || !remotePeerId) {
+      addLog('⚠️ Cannot restart: No peer connection', 'error');
+      return;
+    }
+
+    try {
+      addLog('🔄 Restarting ICE connection...', 'info');
+      
+      // Create new offer with ICE restart
+      const offer = await peerConnectionRef.current.createOffer({ iceRestart: true });
+      await peerConnectionRef.current.setLocalDescription(offer);
+      
+      socketRef.current?.emit('offer', { offer, targetId: remotePeerId });
+      addLog('✅ ICE restart offer sent', 'success');
+    } catch (error) {
+      addLog(`❌ ICE restart failed: ${error.message}`, 'error');
+    }
+  };
+
+  /**
    * Leave room
    */
   const leaveRoom = () => {
@@ -862,20 +923,30 @@ function App() {
 
           {remotePeerId && peerConnection && connectionState !== 'connected' && (
             <div style={{
-              background: '#FF98004d',
-              border: '2px solid #FF9800',
+              background: connectionState === 'failed' ? '#f443364d' : '#FF98004d',
+              border: `2px solid ${connectionState === 'failed' ? '#f44336' : '#FF9800'}`,
               borderRadius: '10px',
               padding: '15px',
               marginBottom: '20px',
               textAlign: 'center'
             }}>
-              <strong>⏳ Connection in progress...</strong>
-              <p style={{ margin: '10px 0 0 0', fontSize: '0.9em' }}>
-                {connectionState === 'connecting' ? 'Negotiating connection...' : 
+              <strong>
+                {connectionState === 'failed' ? '❌ Connection Failed' : '⏳ Connection in progress...'}
+              </strong>
+              <p style={{ margin: '10px 0', fontSize: '0.9em' }}>
+                {connectionState === 'connecting' ? 'Negotiating connection... (This may take 10-30 seconds)' : 
                  connectionState === 'new' ? 'Initializing peer connection...' :
-                 connectionState === 'failed' ? 'Connection failed. Please refresh and try again.' :
+                 connectionState === 'failed' ? 'NAT traversal failed. Click Reconnect or refresh the page.' :
                  'Establishing connection...'}
               </p>
+              {connectionState === 'failed' && (
+                <button 
+                  onClick={restartConnection}
+                  style={{ background: '#FF9800', marginTop: '10px' }}
+                >
+                  🔄 Reconnect
+                </button>
+              )}
             </div>
           )}
 
@@ -925,6 +996,12 @@ function App() {
             {remotePeerId && !peerConnection && (
               <button onClick={() => initiateConnection(remotePeerId)} style={{ background: '#2196F3' }}>
                 🔗 Connect Now
+              </button>
+            )}
+            
+            {peerConnection && (connectionState === 'failed' || connectionState === 'disconnected') && (
+              <button onClick={restartConnection} style={{ background: '#FF9800' }}>
+                🔄 Reconnect
               </button>
             )}
             
