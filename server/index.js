@@ -202,6 +202,25 @@ io.on('connection', (socket) => {
       participants: room.participants
     });
   });
+
+  /**
+   * CALL_STATUS: Forward call status to remote peer
+   * Used to notify when someone starts/ends a call
+   */
+  socket.on('call-status', ({ targetId, status, mode }) => {
+    console.log(`[SIGNALING] Call status from ${socket.id} to ${targetId}: ${status}${mode ? ` (${mode})` : ''}`);
+    
+    if (status === 'started') {
+      io.to(targetId).emit('call-started', { 
+        senderId: socket.id,
+        mode: mode 
+      });
+    } else if (status === 'ended') {
+      io.to(targetId).emit('call-ended', { 
+        senderId: socket.id 
+      });
+    }
+  });
 });
 
 // Health check endpoint

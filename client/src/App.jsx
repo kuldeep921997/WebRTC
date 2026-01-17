@@ -60,6 +60,8 @@ function App() {
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isCallActive, setIsCallActive] = useState(false);
   const [callMode, setCallMode] = useState('video'); // 'audio' or 'video'
+  const [remoteCallActive, setRemoteCallActive] = useState(false);
+  const [remoteCallMode, setRemoteCallMode] = useState(null);
   
   // Media elements
   const localVideoRef = useRef(null);
@@ -97,7 +99,9 @@ function App() {
       addLog(`📥 Received offer from ${senderId}`, 'info');
       setRemotePeerId(senderId);
       
+      // Create peer connection if it doesn't exist
       if (!peerConnectionRef.current) {
+        addLog('🔧 Creating new peer connection for incoming offer', 'info');
         const pc = createPeerConnection(senderId);
         
         pc.ondatachannel = (event) => {
@@ -107,9 +111,12 @@ function App() {
         
         peerConnectionRef.current = pc;
         setPeerConnection(pc);
+      } else {
+        addLog('🔄 Using existing peer connection (renegotiation)', 'info');
       }
 
       try {
+        // Handle the offer (works for both initial connection and renegotiation)
         await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
         addLog('✅ Remote description (offer) set', 'success');
 
@@ -155,11 +162,36 @@ function App() {
     socketConnection.on('user-joined', ({ userId }) => {
       addLog(`👥 User ${userId} joined the room`, 'info');
       setRemotePeerId(userId);
+      
+      // Automatically initiate connection when a remote peer joins
+      // Only if we don't already have a peer connection
+      if (!peerConnectionRef.current) {
+        addLog(`🤝 Auto-initiating connection to ${userId}...`, 'info');
+        // Small delay to ensure state is updated
+        setTimeout(() => {
+          initiateConnection(userId);
+        }, 500);
+      }
     });
 
     socketConnection.on('user-left', ({ userId }) => {
       addLog(`👋 User ${userId} left the room`, 'info');
+      setRemoteCallActive(false);
+      setRemoteCallMode(null);
       cleanup();
+    });
+
+    // Listen for remote peer's call status
+    socketConnection.on('call-started', ({ mode }) => {
+      addLog(`📞 Remote peer started ${mode} call`, 'info');
+      setRemoteCallActive(true);
+      setRemoteCallMode(mode);
+    });
+
+    socketConnection.on('call-ended', () => {
+      addLog(`📞 Remote peer ended call`, 'info');
+      setRemoteCallActive(false);
+      setRemoteCallMode(null);
     });
 
     return () => {
@@ -254,6 +286,16 @@ function App() {
         addMediaTracks(peerConnectionRef.current, stream);
       }
       
+      // Notify remote peer that call started
+      if (currentRoom && remotePeerId) {
+        socketRef.current?.emit('call-status', { 
+          roomId: currentRoom,
+          targetId: remotePeerId,
+          status: 'started',
+          mode: mode 
+        });
+      }
+      
     } catch (error) {
       addLog(`❌ Media access denied: ${error.message}`, 'error');
       alert(`Media access denied: ${error.message}\n\nPlease allow camera/microphone access and try again.`);
@@ -313,11 +355,16 @@ function App() {
      * Each track triggers this event separately
      */
     pc.ontrack = (event) => {
-      addLog(`📹 Received remote ${event.track.kind} track`, 'success');
+      addLog(`📹 Received remote ${event.track.kind} track (ID: ${event.track.id})`, 'success');
       
       if (event.streams && event.streams[0]) {
         setRemoteStream(event.streams[0]);
-        addLog('✅ Remote media stream set', 'success');
+        addLog(`✅ Remote media stream set (${event.streams[0].getTracks().length} tracks)`, 'success');
+        
+        // Log track details
+        event.streams[0].getTracks().forEach(track => {
+          addLog(`  └─ ${track.kind}: ${track.label || 'unlabeled'} [${track.readyState}]`, 'info');
+        });
       } else {
         const stream = new MediaStream([event.track]);
         setRemoteStream(stream);
@@ -403,11 +450,58 @@ function App() {
         if (response.existingParticipants && response.existingParticipants.length > 0) {
           const remotePeer = response.existingParticipants[0];
           setRemotePeerId(remotePeer);
+          addLog(`👥 Found existing peer: ${remotePeer}`, 'info');
+          
+          // Automatically initiate connection to existing peer
+          addLog(`🤝 Auto-connecting to existing peer...`, 'info');
+          setTimeout(() => {
+            initiateConnection(remotePeer);
+          }, 500);
         }
       } else {
         addLog(`❌ Failed to join room: ${response.message}`, 'error');
       }
     });
+  };
+
+  /**
+   * Initiate connection to remote peer (without media initially)
+   * This establishes the data channel connection
+   */
+  const initiateConnection = async (targetPeerId) => {
+    if (!targetPeerId) {
+      addLog('⚠️ No remote peer to connect to', 'error');
+      return;
+    }
+
+    // Don't create duplicate connections
+    if (peerConnectionRef.current) {
+      addLog('⚠️ Peer connection already exists', 'info');
+      return;
+    }
+
+    addLog(`🔗 Establishing connection to ${targetPeerId}...`, 'info');
+    
+    const pc = createPeerConnection(targetPeerId);
+    peerConnectionRef.current = pc;
+    setPeerConnection(pc);
+
+    // Create data channel for messaging
+    const channel = pc.createDataChannel('messaging', { ordered: true });
+    setupDataChannel(channel);
+
+    try {
+      addLog('📝 Creating offer...', 'info');
+      const offer = await pc.createOffer();
+      
+      await pc.setLocalDescription(offer);
+      addLog('✅ Local description (offer) set', 'success');
+
+      socketRef.current?.emit('offer', { offer, targetId: targetPeerId });
+      addLog('📤 Offer sent to remote peer', 'info');
+    } catch (error) {
+      addLog(`❌ Error creating offer: ${error.message}`, 'error');
+    }
   };
 
   /**
@@ -423,26 +517,45 @@ function App() {
       await startCall(mode);
     }
 
-    addLog(`📞 Initiating ${mode} call to ${remotePeerId}...`, 'info');
-    
-    const pc = createPeerConnection(remotePeerId);
-    peerConnectionRef.current = pc;
-    setPeerConnection(pc);
-
-    const channel = pc.createDataChannel('messaging', { ordered: true });
-    setupDataChannel(channel);
-
-    try {
-      addLog('📝 Creating offer...', 'info');
-      const offer = await pc.createOffer();
+    // If peer connection doesn't exist yet, create it
+    if (!peerConnectionRef.current) {
+      addLog(`📞 Initiating ${mode} call to ${remotePeerId}...`, 'info');
       
-      await pc.setLocalDescription(offer);
-      addLog('✅ Local description (offer) set', 'success');
+      const pc = createPeerConnection(remotePeerId);
+      peerConnectionRef.current = pc;
+      setPeerConnection(pc);
 
-      socketRef.current?.emit('offer', { offer, targetId: remotePeerId });
-      addLog('📤 Offer sent to remote peer', 'info');
-    } catch (error) {
-      addLog(`❌ Error creating offer: ${error.message}`, 'error');
+      const channel = pc.createDataChannel('messaging', { ordered: true });
+      setupDataChannel(channel);
+
+      try {
+        addLog('📝 Creating offer...', 'info');
+        const offer = await pc.createOffer();
+        
+        await pc.setLocalDescription(offer);
+        addLog('✅ Local description (offer) set', 'success');
+
+        socketRef.current?.emit('offer', { offer, targetId: remotePeerId });
+        addLog('📤 Offer sent to remote peer', 'info');
+      } catch (error) {
+        addLog(`❌ Error creating offer: ${error.message}`, 'error');
+      }
+    } else {
+      // Peer connection exists, just add media tracks
+      addLog(`📞 Adding ${mode} media to existing connection...`, 'info');
+      if (localStreamRef.current && peerConnectionRef.current) {
+        addMediaTracks(peerConnectionRef.current, localStreamRef.current);
+        
+        // Renegotiate to include new tracks
+        try {
+          const offer = await peerConnectionRef.current.createOffer();
+          await peerConnectionRef.current.setLocalDescription(offer);
+          socketRef.current?.emit('offer', { offer, targetId: remotePeerId });
+          addLog('✅ Renegotiation offer sent', 'success');
+        } catch (error) {
+          addLog(`❌ Renegotiation failed: ${error.message}`, 'error');
+        }
+      }
     }
   };
 
@@ -490,6 +603,15 @@ function App() {
     setIsAudioEnabled(true);
     setIsVideoEnabled(true);
     addLog('📞 Call ended', 'info');
+    
+    // Notify remote peer that call ended
+    if (currentRoom && remotePeerId) {
+      socketRef.current?.emit('call-status', { 
+        roomId: currentRoom,
+        targetId: remotePeerId,
+        status: 'ended'
+      });
+    }
     
     cleanup();
   };
@@ -557,6 +679,8 @@ function App() {
     endCall();
     setCurrentRoom(null);
     setMessages([]);
+    setRemoteCallActive(false);
+    setRemoteCallMode(null);
     addLog('👋 Left room', 'info');
   };
 
@@ -608,17 +732,42 @@ function App() {
             <p><strong>Room:</strong> {currentRoom}</p>
             <p><strong>Your ID:</strong> {socket?.id}</p>
             <p><strong>Remote Peer:</strong> {remotePeerId || 'Waiting...'}</p>
-            <p><strong>Connection State:</strong> {connectionState}</p>
-            <p><strong>Call Status:</strong> {isCallActive ? `📞 ${callMode === 'video' ? 'Video' : 'Audio'} Active` : '⏸️ Inactive'}</p>
+            <p>
+              <strong>Connection State:</strong> 
+              <span style={{
+                marginLeft: '10px',
+                padding: '4px 12px',
+                borderRadius: '12px',
+                fontSize: '0.9em',
+                fontWeight: 'bold',
+                background: 
+                  connectionState === 'connected' ? '#4CAF50' :
+                  connectionState === 'connecting' ? '#FF9800' :
+                  connectionState === 'new' ? '#2196F3' :
+                  '#f44336',
+                color: '#fff'
+              }}>
+                {connectionState === 'connected' ? '✅ Connected' :
+                 connectionState === 'connecting' ? '🔄 Connecting...' :
+                 connectionState === 'new' ? '🆕 Initializing...' :
+                 connectionState === 'failed' ? '❌ Failed' :
+                 connectionState === 'closed' ? '⛔ Closed' :
+                 '⚪ Disconnected'}
+              </span>
+            </p>
+            <p><strong>Peer Connection:</strong> {peerConnection ? '✅ Established' : '❌ Not established'}</p>
+            <p><strong>Data Channel:</strong> {dataChannel && dataChannel.readyState === 'open' ? '✅ Open' : dataChannel ? `🔄 ${dataChannel.readyState}` : '❌ None'}</p>
+            <p><strong>Your Call:</strong> {isCallActive ? `📞 ${callMode === 'video' ? 'Video' : 'Audio'} Active` : '⏸️ Inactive'}</p>
+            <p><strong>Remote Call:</strong> {remoteCallActive ? `📞 ${remoteCallMode === 'video' ? 'Video' : 'Audio'} Active` : '⏸️ Inactive'}</p>
             <p><strong>Microphone:</strong> {isCallActive ? (isAudioEnabled ? '🎤 On' : '🔇 Muted') : '❌ Off'}</p>
             {callMode === 'video' && <p><strong>Camera:</strong> {isCallActive ? (isVideoEnabled ? '📹 On' : '🚫 Off') : '❌ Off'}</p>}
             <p><strong>Remote Stream:</strong> {remoteStream ? '✅ Receiving' : '❌ Not receiving'}</p>
           </div>
 
           {/* Video Display */}
-          {isCallActive && callMode === 'video' && (
-            <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap' }}>
-              {/* Local Video */}
+          <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            {/* Local Video - Show when call is active */}
+            {isCallActive && callMode === 'video' && (
               <div style={{ flex: 1, minWidth: '300px' }}>
                 <h3 style={{ marginBottom: '10px', color: '#61dafb' }}>📹 Your Video</h3>
                 <div style={{ position: 'relative', background: '#000', borderRadius: '10px', overflow: 'hidden' }}>
@@ -652,10 +801,14 @@ function App() {
                   )}
                 </div>
               </div>
+            )}
 
-              {/* Remote Video */}
+            {/* Remote Video - Show whenever there's a remote stream */}
+            {(remoteStream || (peerConnection && connectionState === 'connected')) && (
               <div style={{ flex: 1, minWidth: '300px' }}>
-                <h3 style={{ marginBottom: '10px', color: '#4CAF50' }}>📹 Remote Video</h3>
+                <h3 style={{ marginBottom: '10px', color: '#4CAF50' }}>
+                  📹 Remote {remoteCallActive ? `${remoteCallMode === 'video' ? 'Video' : 'Audio'}` : 'Stream'}
+                </h3>
                 <div style={{ position: 'relative', background: '#000', borderRadius: '10px', overflow: 'hidden' }}>
                   <video
                     ref={remoteVideoRef}
@@ -665,7 +818,7 @@ function App() {
                       width: '100%',
                       maxHeight: '400px',
                       display: 'block',
-                      objectFit: 'cover'
+                      objectFit: 'contain'
                     }}
                   />
                   {!remoteStream && (
@@ -682,22 +835,105 @@ function App() {
                       fontSize: '3em',
                       color: '#666'
                     }}>
-                      ⏳ Waiting...
+                      ⏳ Waiting for stream...
                     </div>
                   )}
                 </div>
               </div>
+            )}
+          </div>
+
+          {/* Connection Status Alert */}
+          {remotePeerId && !peerConnection && (
+            <div style={{
+              background: '#2196F34d',
+              border: '2px solid #2196F3',
+              borderRadius: '10px',
+              padding: '15px',
+              marginBottom: '20px',
+              textAlign: 'center'
+            }}>
+              <strong>🔄 Connecting to peer...</strong>
+              <p style={{ margin: '10px 0 0 0', fontSize: '0.9em' }}>
+                Auto-connecting to {remotePeerId.substring(0, 12)}...
+              </p>
+            </div>
+          )}
+
+          {remotePeerId && peerConnection && connectionState !== 'connected' && (
+            <div style={{
+              background: '#FF98004d',
+              border: '2px solid #FF9800',
+              borderRadius: '10px',
+              padding: '15px',
+              marginBottom: '20px',
+              textAlign: 'center'
+            }}>
+              <strong>⏳ Connection in progress...</strong>
+              <p style={{ margin: '10px 0 0 0', fontSize: '0.9em' }}>
+                {connectionState === 'connecting' ? 'Negotiating connection...' : 
+                 connectionState === 'new' ? 'Initializing peer connection...' :
+                 connectionState === 'failed' ? 'Connection failed. Please refresh and try again.' :
+                 'Establishing connection...'}
+              </p>
+            </div>
+          )}
+
+          {remotePeerId && peerConnection && connectionState === 'connected' && (
+            <div style={{
+              background: '#4CAF504d',
+              border: '2px solid #4CAF50',
+              borderRadius: '10px',
+              padding: '15px',
+              marginBottom: '20px',
+              textAlign: 'center'
+            }}>
+              <strong>✅ Peer connection established!</strong>
+              <p style={{ margin: '10px 0 0 0', fontSize: '0.9em' }}>
+                You can now start a video/audio call or send messages.
+              </p>
             </div>
           )}
 
           <h2>📞 Call Controls</h2>
+          
+          {/* Show Join Call button if remote peer has active call */}
+          {remoteCallActive && !isCallActive && (
+            <div style={{
+              background: '#4CAF504d',
+              border: '2px solid #4CAF50',
+              borderRadius: '10px',
+              padding: '15px',
+              marginBottom: '20px',
+              textAlign: 'center'
+            }}>
+              <strong>📞 {remotePeerId?.substring(0, 12)}... is on a {remoteCallMode} call</strong>
+              <p style={{ margin: '10px 0', fontSize: '0.9em' }}>
+                Join the call to communicate with them
+              </p>
+              <button 
+                onClick={() => startCall(remoteCallMode)} 
+                style={{ background: '#4CAF50', fontSize: '1.1em', padding: '12px 24px' }}
+                disabled={!peerConnection || connectionState !== 'connected'}
+              >
+                {remoteCallMode === 'video' ? '🎥 Join Video Call' : '🎤 Join Audio Call'}
+              </button>
+            </div>
+          )}
+          
           <div className="controls">
+            {remotePeerId && !peerConnection && (
+              <button onClick={() => initiateConnection(remotePeerId)} style={{ background: '#2196F3' }}>
+                🔗 Connect Now
+              </button>
+            )}
+            
             {!isCallActive ? (
               <>
-                <button onClick={() => startCall('video')}>
+                <button onClick={() => startCall('video')} disabled={!peerConnection || connectionState !== 'connected'}>
                   🎥 Start Video Call
                 </button>
-                <button onClick={() => startCall('audio')}>
+                <button onClick={() => startCall('audio')} disabled={!peerConnection || connectionState !== 'connected'}>
                   🎤 Start Audio Only
                 </button>
               </>
@@ -713,17 +949,6 @@ function App() {
                 )}
                 <button onClick={endCall} style={{ background: '#f44336' }}>
                   📞 End Call
-                </button>
-              </>
-            )}
-            
-            {remotePeerId && !peerConnection && (
-              <>
-                <button onClick={() => initiateCall('video')}>
-                  🎥 Video Call {remotePeerId.substring(0, 8)}...
-                </button>
-                <button onClick={() => initiateCall('audio')}>
-                  🎤 Audio Call {remotePeerId.substring(0, 8)}...
                 </button>
               </>
             )}

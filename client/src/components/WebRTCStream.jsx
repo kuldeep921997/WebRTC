@@ -75,7 +75,7 @@ const WebRTCStream = ({ peerConnection, onLog, remotePeerId, socket }) => {
           height: { ideal: 1080 },
           frameRate: { ideal: 30 }
         },
-        audio: false // Set true to capture system audio
+        audio: true // Set true to capture system audio
       });
 
       addLog('✅ Screen capture started', 'success');
@@ -93,7 +93,7 @@ const WebRTCStream = ({ peerConnection, onLog, remotePeerId, socket }) => {
        * Add screen track to peer connection
        * This replaces the camera video track with screen track
        */
-      if (peerConnection) {
+      if (peerConnection && remotePeerId) {
         const videoTrack = stream.getVideoTracks()[0];
         
         // Find existing video sender and replace track
@@ -103,9 +103,29 @@ const WebRTCStream = ({ peerConnection, onLog, remotePeerId, socket }) => {
         if (videoSender) {
           await videoSender.replaceTrack(videoTrack);
           addLog('✅ Screen track added to peer connection (replaced camera)', 'success');
+          
+          // Trigger renegotiation to send new track to remote peer
+          try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket?.emit('offer', { offer, targetId: remotePeerId });
+            addLog('✅ Renegotiation offer sent for screen share', 'success');
+          } catch (error) {
+            addLog(`⚠️ Renegotiation failed: ${error.message}`, 'error');
+          }
         } else {
           peerConnection.addTrack(videoTrack, stream);
           addLog('✅ Screen track added to peer connection', 'success');
+          
+          // Trigger renegotiation for new track
+          try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket?.emit('offer', { offer, targetId: remotePeerId });
+            addLog('✅ Renegotiation offer sent for screen share', 'success');
+          } catch (error) {
+            addLog(`⚠️ Renegotiation failed: ${error.message}`, 'error');
+          }
         }
       } else {
         addLog('⚠️ No peer connection. Screen visible locally only.', 'info');
@@ -221,18 +241,41 @@ const WebRTCStream = ({ peerConnection, onLog, remotePeerId, socket }) => {
     /**
      * Add canvas track to peer connection
      */
-    if (peerConnection) {
+    if (peerConnection && remotePeerId) {
       const videoTrack = stream.getVideoTracks()[0];
       
       const senders = peerConnection.getSenders();
       const videoSender = senders.find(sender => sender.track?.kind === 'video');
       
       if (videoSender) {
-        videoSender.replaceTrack(videoTrack);
-        addLog('✅ Canvas track added to peer connection (replaced camera)', 'success');
+        videoSender.replaceTrack(videoTrack).then(async () => {
+          addLog('✅ Canvas track added to peer connection (replaced camera)', 'success');
+          
+          // Trigger renegotiation to send new track to remote peer
+          try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket?.emit('offer', { offer, targetId: remotePeerId });
+            addLog('✅ Renegotiation offer sent for canvas stream', 'success');
+          } catch (error) {
+            addLog(`⚠️ Renegotiation failed: ${error.message}`, 'error');
+          }
+        });
       } else {
         peerConnection.addTrack(videoTrack, stream);
         addLog('✅ Canvas track added to peer connection', 'success');
+        
+        // Trigger renegotiation for new track
+        (async () => {
+          try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket?.emit('offer', { offer, targetId: remotePeerId });
+            addLog('✅ Renegotiation offer sent for canvas stream', 'success');
+          } catch (error) {
+            addLog(`⚠️ Renegotiation failed: ${error.message}`, 'error');
+          }
+        })();
       }
     } else {
       addLog('⚠️ No peer connection. Canvas visible locally only.', 'info');
